@@ -16,6 +16,9 @@
  * resource loader, and a fixed child tool surface.
  */
 
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { type AssistantMessage, type Model, Type } from '@earendil-works/pi-ai';
 import {
@@ -55,6 +58,40 @@ function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }], details: undefined };
 }
 
+// --- shannon-scanner: sub-agent result cache --------------------------------
+// Persist each successful sub-agent result under the run's writable overlay
+// (.shannon/scratchpad), keyed by the exact task prompt. On a Temporal retry
+// (e.g. after an LLM rate-limit or 5h quota failure) the parent re-issues the
+// same task prompts; cached sub-agents return instantly and cost nothing, so the
+// scan makes forward progress each quota window instead of restarting from zero.
+const SUBAGENT_CACHE_SUBDIR = path.join('.shannon', 'scratchpad', 'subagent-cache');
+
+function subagentCacheFile(cwd: string, prompt: string): string {
+  const key = createHash('sha256').update(prompt).digest('hex');
+  return path.join(cwd, SUBAGENT_CACHE_SUBDIR, `${key}.txt`);
+}
+
+function readSubagentCache(file: string): string | undefined {
+  try {
+    return fs.readFileSync(file, 'utf-8');
+  } catch {
+    return undefined;
+  }
+}
+
+function writeSubagentCache(file: string, text: string): void {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text, 'utf-8');
+  } catch {
+    // Best-effort: a cache write must never break a scan.
+  }
+}
+
+function subagentResultLooksFailed(text: string): boolean {
+  return /rate.?limit|usage limit|billing|\b429\b|Sub-agent error/i.test(text);
+}
+
 export function createTaskTool(config: TaskToolContext): ToolDefinition {
   const taskTool: ToolDefinition = defineTool({
     name: 'task',
@@ -77,6 +114,15 @@ export function createTaskTool(config: TaskToolContext): ToolDefinition {
       description: Type.Optional(Type.String({ description: 'A short (3-5 word) description of the task.' })),
     }),
     async execute(_toolCallId, params) {
+      // shannon-scanner: return a cached result if this exact sub-agent task was
+      // already completed in an earlier attempt of this scan (checkpoint resume).
+      const cacheFile = subagentCacheFile(config.cwd, params.prompt);
+      const cachedResult = readSubagentCache(cacheFile);
+      if (cachedResult !== undefined) {
+        console.error(`[SUBAGENT-CACHE] HIT ${params.description ?? ''} ${path.basename(cacheFile)}`);
+        return textResult(cachedResult);
+      }
+      console.error(`[SUBAGENT-CACHE] MISS ${params.description ?? ''} ${path.basename(cacheFile)}`);
       const agentDir = getAgentDir();
       const { session: subSession } = await createAgentSession({
         cwd: config.cwd,
@@ -146,6 +192,13 @@ export function createTaskTool(config: TaskToolContext): ToolDefinition {
 
       if (swallowedError && !resultText.includes(swallowedError)) {
         resultText += `\n[Sub-agent error: ${swallowedError}]`;
+      }
+
+      // shannon-scanner: cache only clean successes so a retry after a rate-limit
+      // / quota failure can skip this sub-agent instead of re-running (re-paying).
+      if (!swallowedError && resultText && !subagentResultLooksFailed(resultText)) {
+        writeSubagentCache(cacheFile, resultText);
+        console.error(`[SUBAGENT-CACHE] STORE ${params.description ?? ''} ${path.basename(cacheFile)}`);
       }
 
       return textResult(resultText || '[Sub-agent produced no output]');
