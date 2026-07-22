@@ -105,12 +105,18 @@ const testActs = proxyActivities<typeof activities>({
   retry: TESTING_RETRY,
 });
 
-// Retry configuration for subscription plans (5h+ rolling rate limit windows)
+// Retry configuration for subscription plans (5h+ rolling rate limit windows).
+// shannon-scanner: maximumInterval lowered from 6h to 20min so that, once a token
+// quota refills, a retry fires within ~20min instead of the scan sitting idle for
+// hours. Each failed attempt during exhaustion is cheap (one 429, no budget spent,
+// completed sub-agents served from cache), so retrying more often costs nothing.
+// maximumAttempts raised so the retry span still covers a multi-hour wait at the
+// shorter interval (100 * 20min already ~= 33h; 200 gives headroom).
 const SUBSCRIPTION_RETRY = {
   initialInterval: '5 minutes',
-  maximumInterval: '6 hours',
+  maximumInterval: '20 minutes',
   backoffCoefficient: 2,
-  maximumAttempts: 100,
+  maximumAttempts: 200,
   nonRetryableErrorTypes: PRODUCTION_RETRY.nonRetryableErrorTypes,
 };
 
