@@ -88,10 +88,6 @@ function writeSubagentCache(file: string, text: string): void {
   }
 }
 
-function subagentResultLooksFailed(text: string): boolean {
-  return /rate.?limit|usage limit|billing|\b429\b|Sub-agent error/i.test(text);
-}
-
 export function createTaskTool(config: TaskToolContext): ToolDefinition {
   const taskTool: ToolDefinition = defineTool({
     name: 'task',
@@ -196,7 +192,10 @@ export function createTaskTool(config: TaskToolContext): ToolDefinition {
 
       // shannon-scanner: cache only clean successes so a retry after a rate-limit
       // / quota failure can skip this sub-agent instead of re-running (re-paying).
-      if (!swallowedError && resultText && !subagentResultLooksFailed(resultText)) {
+      // Detect failure by the sub-agent's actual error state and the literal error
+      // marker the code appends above — NOT by scanning the result text for words
+      // like "rate limit" / "429", which appear legitimately in security findings.
+      if (!swallowedError && resultText && !resultText.includes('[Sub-agent error:')) {
         writeSubagentCache(cacheFile, resultText);
         console.error(`[SUBAGENT-CACHE] STORE ${params.description ?? ''} ${path.basename(cacheFile)}`);
       }
