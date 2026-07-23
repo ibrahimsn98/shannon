@@ -50,10 +50,57 @@ import type { AgentMetrics, PipelineState, ResumeState } from './shared.js';
 const MAX_ERROR_MESSAGE_LENGTH = 2000;
 const MAX_STACK_TRACE_LENGTH = 1000;
 
-// Max retries for output validation errors (agent didn't save deliverables)
-const MAX_OUTPUT_VALIDATION_RETRIES = 3;
+// Max retries for output validation errors (agent didn't save deliverables).
+// Counted per-agent, per-workflow via bumpValidationFailures() below — NOT off
+// the shared Temporal attempt counter — so quota/billing-429 and transient
+// retries never consume this budget.
+const MAX_OUTPUT_VALIDATION_RETRIES = 6;
 
 const HEARTBEAT_INTERVAL_MS = 2000;
+
+// --- shannon-scanner: per-agent output-validation retry budget ---------------
+// The output-validation cap must count ONLY validation failures. The Temporal
+// attempt counter (Context.current().info.attempt) also increments on billing/
+// quota-429 and transient retries, so a long 5h-quota window can burn the whole
+// budget before the agent gets a single real attempt to emit a valid deliverable
+// (this is exactly why auth-vuln failed after waiting out a 3h quota window).
+//
+// We persist a per-agent counter under the run's writable overlay
+// (.shannon/scratchpad), same mechanism as the sub-agent cache — it survives
+// Temporal retries and the failAgent git rollback. Keyed by workflowId so it is
+// stable across a run's activity retries but RESETS on a resume pass (which runs
+// as a new workflow, `<base>_resume_N`), giving a re-driven agent a fresh budget.
+const VALIDATION_RETRY_SUBDIR = path.join('.shannon', 'scratchpad', 'validation-retries');
+
+function validationRetryFile(repoPath: string, workflowId: string, agentName: string): string {
+  const safeRun = workflowId.replace(/[^A-Za-z0-9._-]/g, '_');
+  return path.join(repoPath, VALIDATION_RETRY_SUBDIR, safeRun, `${agentName}.count`);
+}
+
+// bumpValidationFailures increments and returns the per-agent validation-failure
+// count for this workflow run. Best-effort persistence: if the overlay can't be
+// written we still return an incremented in-memory value (>=1) so the cap holds.
+async function bumpValidationFailures(
+  repoPath: string,
+  workflowId: string,
+  agentName: string,
+): Promise<number> {
+  const file = validationRetryFile(repoPath, workflowId, agentName);
+  let count = 0;
+  try {
+    count = parseInt(await fs.readFile(file, 'utf-8'), 10) || 0;
+  } catch {
+    count = 0;
+  }
+  count += 1;
+  try {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, String(count), 'utf-8');
+  } catch {
+    // Best-effort: a counter write must never break a scan.
+  }
+  return count;
+}
 
 /**
  * Input for all agent activities.
@@ -210,17 +257,20 @@ async function runAgentActivity(
       throw error;
     }
 
-    // Check if output validation retry limit reached (PentestError with code)
-    if (
-      error instanceof PentestError &&
-      error.code === ErrorCode.OUTPUT_VALIDATION_FAILED &&
-      attemptNumber >= MAX_OUTPUT_VALIDATION_RETRIES
-    ) {
-      throw ApplicationFailure.nonRetryable(
-        `Agent ${agentName} failed output validation after ${attemptNumber} attempts`,
-        'OutputValidationError',
-        [{ agentName, attemptNumber, elapsed: Date.now() - startTime }],
-      );
+    // Output-validation failures get their OWN retry budget, counted separately
+    // from the shared Temporal attempt counter (which billing/quota-429 and
+    // transient retries also increment). Only a validation failure bumps this
+    // counter, so a long quota window can no longer starve the agent of real
+    // attempts to produce a valid deliverable.
+    if (error instanceof PentestError && error.code === ErrorCode.OUTPUT_VALIDATION_FAILED) {
+      const validationFailures = await bumpValidationFailures(repoPath, workflowId, agentName);
+      if (validationFailures >= MAX_OUTPUT_VALIDATION_RETRIES) {
+        throw ApplicationFailure.nonRetryable(
+          `Agent ${agentName} failed output validation after ${validationFailures} validation attempts`,
+          'OutputValidationError',
+          [{ agentName, attemptNumber, validationFailures, elapsed: Date.now() - startTime }],
+        );
+      }
     }
 
     // Classify error for Temporal retry behavior
