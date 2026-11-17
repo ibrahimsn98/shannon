@@ -695,6 +695,9 @@ export const distributeConfig = (config: Config | null): DistributedConfig => {
 
   const rules_of_engagement = config?.rules_of_engagement?.trim() ?? '';
 
+  const maxConcurrentRaw = config?.pipeline?.max_concurrent_pipelines;
+  const maxConcurrentPipelines = maxConcurrentRaw !== undefined ? Number(maxConcurrentRaw) : undefined;
+
   return {
     avoid: avoid.map(sanitizeRule),
     focus: focus.map(sanitizeRule),
@@ -704,6 +707,7 @@ export const distributeConfig = (config: Config | null): DistributedConfig => {
     exploit,
     report,
     rules_of_engagement,
+    ...(maxConcurrentPipelines !== undefined && { maxConcurrentPipelines }),
   };
 };
 

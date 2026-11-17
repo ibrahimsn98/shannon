@@ -182,6 +182,18 @@
       "description": "Deprecated: Use 'authentication' section instead",
       "deprecated": true
     },
+    "pipeline": {
+      "type": "object",
+      "description": "Pipeline execution settings",
+      "properties": {
+        "max_concurrent_pipelines": {
+          "type": "string",
+          "pattern": "^[1-5]$",
+          "description": "Max concurrent vulnerability/exploitation pipelines (1-5, default: 5). Lower it for rate-limited model plans."
+        }
+      },
+      "additionalProperties": false
+    },
     "description": {
       "type": "string",
       "description": "Description of the target environment, its deployment context, and any information that helps guide the security assessment",
@@ -198,7 +210,8 @@
     { "required": ["agentic_sast"] },
     { "required": ["exploit"] },
     { "required": ["report"] },
-    { "required": ["rules_of_engagement"] }
+    { "required": ["rules_of_engagement"] },
+    { "required": ["pipeline"] }
   ],
   "additionalProperties": false,
   "$defs": {

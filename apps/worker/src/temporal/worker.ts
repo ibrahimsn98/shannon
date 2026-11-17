@@ -526,6 +526,7 @@ async function resolveWorkspace(client: Client, args: CliArgs, expectedExploit: 
 interface OrchestrationConfig {
   agenticSast?: AgenticSastInput;
   exploit?: boolean;
+  maxConcurrentPipelines?: number;
 }
 
 /**
@@ -551,6 +552,9 @@ async function loadOrchestrationConfig(configPath: string | undefined): Promise<
       },
     }),
     exploit: distributed.exploit,
+    ...(distributed.maxConcurrentPipelines !== undefined && {
+      maxConcurrentPipelines: distributed.maxConcurrentPipelines,
+    }),
   };
 }
 
@@ -603,6 +607,9 @@ function buildPipelineInput(
     ...(args.customerOutputPath !== undefined && { customerOutputPath: args.customerOutputPath }),
     ...(orchestration.agenticSast !== undefined && { agenticSast: orchestration.agenticSast }),
     ...(orchestration.exploit !== undefined && { exploit: orchestration.exploit }),
+    ...(orchestration.maxConcurrentPipelines !== undefined && {
+      maxConcurrentPipelines: orchestration.maxConcurrentPipelines,
+    }),
     ...(args.authOnly && { authOnly: true }),
     ...(args.validateModel && { validateModel: true }),
   };

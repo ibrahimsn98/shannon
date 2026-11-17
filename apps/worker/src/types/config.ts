@@ -74,6 +74,11 @@ export interface AgenticSastConfig {
   enabled: 'true' | 'false';
 }
 
+export interface PipelineConfig {
+  /** YAML string form of an integer 1-5 (the schema's FAILSAFE parse yields strings). */
+  max_concurrent_pipelines?: string;
+}
+
 export interface Config {
   rules?: Rules;
   authentication?: Authentication;
@@ -82,6 +87,7 @@ export interface Config {
   exploit?: 'true' | 'false';
   report?: ReportConfig;
   rules_of_engagement?: string;
+  pipeline?: PipelineConfig;
 }
 
 /** Report config after coercion. The YAML form of `sarif` is a string (see ReportConfig). */
@@ -97,6 +103,8 @@ export interface DistributedConfig {
   exploit: boolean;
   report: DistributedReportConfig;
   rules_of_engagement: string;
+  /** Upper bound on concurrent vuln/exploit pipelines; absent means the workflow default. */
+  maxConcurrentPipelines?: number;
 }
 
 /**

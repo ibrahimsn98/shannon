@@ -108,6 +108,7 @@ export interface PipelineInput {
   customerOutputPath?: string; // Stable mounted path for final customer copies only
   checkpointsEnabled?: boolean; // Enable checkpoint activities (default: false)
   exploit?: boolean; // false skips the exploitation phase
+  maxConcurrentPipelines?: number; // Upper bound on concurrent vuln/exploit pipelines (1-5)
   authOnly?: boolean; // true stops the run after auth validation (no pentest, no report)
   validateModel?: boolean; // true stops the run after the preflight model checks (no pentest, no report)
 }

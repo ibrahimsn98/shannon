@@ -183,7 +183,7 @@ const seedMiscellaneousActs = proxyActivities<Pick<ReconciliationActivityRegistr
   cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 });
 
-const MAX_CONCURRENT_PIPELINES = 5;
+const DEFAULT_MAX_CONCURRENT_PIPELINES = 5;
 const MAX_NON_FATAL_FAILURES = 32;
 
 const CAPELLA_OPERATION_KEY = 'agentic-sast';
@@ -1417,7 +1417,8 @@ export async function pentestPipeline(input: PipelineInput): Promise<PipelineSta
       // Launch the Miscellaneous lane concurrently with the five fixed classes; it shares the same
       // settled SARIF and joins the common barrier below.
       const miscellaneousLane = runMiscellaneousExploitLane(settlement);
-      const pipelineResults = await runWithConcurrencyLimit(pipelineThunks, MAX_CONCURRENT_PIPELINES);
+      const maxConcurrentPipelines = input.maxConcurrentPipelines ?? DEFAULT_MAX_CONCURRENT_PIPELINES;
+      const pipelineResults = await runWithConcurrencyLimit(pipelineThunks, maxConcurrentPipelines);
       // Join the sixth lane before aggregation so its outcome is always observed (never a
       // dropped rejection in the workflow VM) and a cancellation from either path propagates.
       await miscellaneousLane;
