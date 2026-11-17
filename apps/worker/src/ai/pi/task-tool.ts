@@ -6,6 +6,9 @@
 
 /** Generic child-session delegation for the pi harness. */
 
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { AssistantMessage, Model } from '@earendil-works/pi-ai';
 import {
   createAgentSession,
@@ -51,6 +54,36 @@ const CHILD_CANCELLED_TEXT = '[Sub-agent task was cancelled]';
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }], details: undefined };
+}
+
+// --- shannon-scanner: sub-agent result cache --------------------------------
+// Persist each successful sub-agent result under the run's writable overlay
+// (.shannon/scratchpad), keyed by the exact task prompt. On a Temporal retry
+// (e.g. after an LLM rate-limit or 5h quota failure) the parent re-issues the
+// same task prompts; cached sub-agents return instantly and cost nothing, so the
+// scan makes forward progress each quota window instead of restarting from zero.
+const SUBAGENT_CACHE_SUBDIR = path.join('.shannon', 'scratchpad', 'subagent-cache');
+
+function subagentCacheFile(cwd: string, prompt: string): string {
+  const key = createHash('sha256').update(prompt).digest('hex');
+  return path.join(cwd, SUBAGENT_CACHE_SUBDIR, `${key}.txt`);
+}
+
+function readSubagentCache(file: string): string | undefined {
+  try {
+    return fs.readFileSync(file, 'utf-8');
+  } catch {
+    return undefined;
+  }
+}
+
+function writeSubagentCache(file: string, text: string): void {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text, 'utf-8');
+  } catch {
+    // Best-effort: a cache write must never break a scan.
+  }
 }
 
 /**
@@ -113,6 +146,18 @@ export function createTaskTool(config: TaskToolContext): ToolDefinition {
       // The parent's emitter first writes the raw task invocation, then this delegation
       // record. Awaiting it prevents the child emitter from overtaking its lineage start.
       await config.onDelegationStart?.(child);
+
+      // shannon-scanner: return a cached result if this exact sub-agent task was
+      // already completed in an earlier attempt of this scan (checkpoint resume).
+      const cacheFile = subagentCacheFile(config.cwd, params.prompt);
+      const cachedResult = readSubagentCache(cacheFile);
+      if (cachedResult !== undefined) {
+        console.error(`[SUBAGENT-CACHE] HIT ${child} ${path.basename(cacheFile)}`);
+        emitter?.sessionComplete(Date.now() - startedAt, 0, 0);
+        await emitter?.flush();
+        return textResult(cachedResult);
+      }
+      console.error(`[SUBAGENT-CACHE] MISS ${child} ${path.basename(cacheFile)}`);
 
       const agentDir = getAgentDir();
       let subSession: Awaited<ReturnType<typeof createAgentSession>>['session'] | undefined;
@@ -216,6 +261,16 @@ export function createTaskTool(config: TaskToolContext): ToolDefinition {
         emitter?.sessionFailure('CHILD_TASK_FAILED', durationMs);
         await emitter?.flush();
         return textResult(CHILD_FAILURE_TEXT);
+      }
+
+      // shannon-scanner: cache only clean successes (every failure/cancel path has
+      // returned above) so a retry after a rate-limit / quota failure can skip this
+      // sub-agent instead of re-running (re-paying). Failure is judged by session
+      // state, never by scanning the text, whose security findings legitimately
+      // mention "rate limit" / "429".
+      if (resultText) {
+        writeSubagentCache(cacheFile, resultText);
+        console.error(`[SUBAGENT-CACHE] STORE ${child} ${path.basename(cacheFile)}`);
       }
 
       emitter?.sessionComplete(durationMs, turns, operations);
